@@ -22,9 +22,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            build-essential bc bison flex libssl-dev libelf-dev python3 cpio
+            build-essential bc bison flex libssl-dev libelf-dev python3 cpio ccache
+
+      - name: Cache GNU Make 4.2.1
+        id: cache-make42
+        uses: actions/cache@v4
+        with:
+          path: ~/.local
+          key: make-4.2.1-${{ runner.os }}-${{ hashFiles('tools/make-4.2.1.tar.gz') }}
 
       - name: Build GNU Make 4.2.1
+        if: steps.cache-make42.outputs.cache-hit != 'true'
         run: |
           WORK=$(mktemp -d)
           tar xzf tools/make-4.2.1.tar.gz -C "$WORK"
@@ -36,18 +44,36 @@ jobs:
           ln -sf make "$HOME/.local/bin/make42"
           "$HOME/.local/bin/make42" --version | head -n1
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-a23-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-a23-${{ runner.os }}-
+
       - name: Configure and compile kernel (Image.gz)
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          export CCACHE_MAXSIZE="2G"
+          export CCACHE_COMPRESS=1
+          export CCACHE_SLOPPINESS="file_macro,time_macros"
+          export CCACHE_NOHASHDIR=1
+          export CCACHE_BASEDIR="$PWD"
+          ccache -z
           KERNEL_DIR="$PWD/SM-A235M_LA_14_Opensource/Kernel"
           OUT_DIR="$PWD/out"
           mkdir -p "$OUT_DIR"
           make42 -j"$(nproc)" -C "$KERNEL_DIR" O="$OUT_DIR" \
             ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache aarch64-linux-gnu-gcc" HOSTCC="ccache gcc" \
             CONFIG_SECTION_MISMATCH_WARN_ONLY=y a23_eur_open_defconfig
           make42 -j"$(nproc)" -C "$KERNEL_DIR" O="$OUT_DIR" \
             ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache aarch64-linux-gnu-gcc" HOSTCC="ccache gcc" \
             CONFIG_SECTION_MISMATCH_WARN_ONLY=y Image.gz
+          ccache -s
 
       - name: Pack boot.img with mkbootimg
         run: |
