@@ -3,6 +3,11 @@
  * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
+#ifdef __GENKSYMS__
+#undef __packed
+#define __packed
+#endif
+
 #include <linux/of.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
