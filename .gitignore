@@ -1,0 +1,11 @@
+# Ignore archives, stock dumps, and build output
+*.zip
+*.tar.gz
+!tools/make-4.2.1.tar.gz
+*.img
+/SM-A235M_LA_14_Opensource/Platform/
+/SM-A235M_LA_14_Opensource/Kernel/out/
+/out/
+/output/
+/verify/
+/bootimg_stock/kernel*
