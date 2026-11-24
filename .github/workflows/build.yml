@@ -1,0 +1,82 @@
+name: Build SM-A235M Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'SM-A235M_LA_14_Opensource/Kernel/**'
+      - 'bootimg_stock/**'
+      - 'tools/**'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            build-essential bc bison flex libssl-dev libelf-dev python3 cpio
+
+      - name: Build GNU Make 4.2.1
+        run: |
+          WORK=$(mktemp -d)
+          tar xzf tools/make-4.2.1.tar.gz -C "$WORK"
+          cd "$WORK/make-4.2.1"
+          ./configure --prefix="$HOME/.local" \
+            CFLAGS="-O2 -Wno-error -Wno-int-to-pointer-cast -Wno-incompatible-pointer-types -Wno-implicit-function-declaration -D__alloca=alloca -D__stat=stat"
+          make -j"$(nproc)"
+          make install
+          ln -sf make "$HOME/.local/bin/make42"
+          "$HOME/.local/bin/make42" --version | head -n1
+
+      - name: Configure and compile kernel (Image.gz)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          KERNEL_DIR="$PWD/SM-A235M_LA_14_Opensource/Kernel"
+          OUT_DIR="$PWD/out"
+          mkdir -p "$OUT_DIR"
+          make42 -j"$(nproc)" -C "$KERNEL_DIR" O="$OUT_DIR" \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CONFIG_SECTION_MISMATCH_WARN_ONLY=y a23_eur_open_defconfig
+          make42 -j"$(nproc)" -C "$KERNEL_DIR" O="$OUT_DIR" \
+            ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CONFIG_SECTION_MISMATCH_WARN_ONLY=y Image.gz
+
+      - name: Pack boot.img with mkbootimg
+        run: |
+          mkdir -p output
+          python3 tools/mkbootimg/mkbootimg.py \
+            --kernel out/arch/arm64/boot/Image.gz \
+            --ramdisk bootimg_stock/ramdisk \
+            --dtb bootimg_stock/dtb \
+            --cmdline "console=null androidboot.hardware=qcom androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=4e00000.dwc3 swiotlb=2048 loop.max_part=7 cgroup.memory=nokmem,nosocket firmware_class.path=/vendor/firmware_mnt/image printk.devkmsg=on" \
+            --base 0x00000000 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x02000000 \
+            --tags_offset 0x01e00000 \
+            --dtb_offset 0x01f00000 \
+            --pagesize 4096 \
+            --header_version 2 \
+            --os_version 11.0.0 \
+            --os_patch_level 2026-02 \
+            --board SRPUL29A015 \
+            -o output/boot.img
+          python3 tools/mkbootimg/unpack_bootimg --boot_img output/boot.img --out output/.verify
+          rm -rf output/.verify
+          cp out/arch/arm64/boot/Image.gz output/Image.gz
+          ls -lh output/
+
+      - name: Upload boot.img and Image.gz artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: a23-boot-img
+          path: |
+            output/boot.img
+            output/Image.gz
