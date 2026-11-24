@@ -1356,6 +1356,10 @@ static int check_version(const struct load_info *info,
 bad_version:
 	pr_warn("%s: disagrees about version of symbol %s\n",
 	       info->name, symname);
+#ifdef CONFIG_MODULE_FORCE_LOAD
+	if (try_to_force_load(mod, symname) == 0)
+		return 1;
+#endif
 	return 0;
 }
 

@@ -1466,6 +1466,8 @@ struct task_struct {
 #endif
 #ifdef CONFIG_FIVE
 	struct task_integrity		*integrity;
+#else
+	void				*__kabi_five_pad;
 #endif
 	int				pagefault_disabled;
 #ifdef CONFIG_MMU

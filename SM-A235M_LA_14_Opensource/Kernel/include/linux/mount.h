@@ -70,6 +70,8 @@ struct vfsmount {
 	struct super_block *mnt_sb;	/* pointer to superblock */
 #ifdef CONFIG_KDP_NS
 	struct mount *bp_mount;	/* pointer to mount*/
+#else
+	void *__kabi_kdp_ns_pad;
 #endif
 	int mnt_flags;
 	ANDROID_KABI_RESERVE(1);
