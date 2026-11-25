@@ -6030,6 +6030,7 @@ int __mockable ss_create_sysfs(struct samsung_display_driver_data *vdd)
 	struct lcd_device *lcd_device;
 #if IS_ENABLED(CONFIG_BACKLIGHT_CLASS_DEVICE)
 	struct backlight_device *bd = NULL;
+	struct backlight_properties props;
 #endif
 	char dirname[10];
 	struct class *motto_class;
@@ -6068,13 +6069,18 @@ int __mockable ss_create_sysfs(struct samsung_display_driver_data *vdd)
 	else
 		sprintf(dirname, "panel%d", vdd->ndx);
 
+	memset(&props, 0, sizeof(props));
+	props.type = BACKLIGHT_RAW;
+	props.max_brightness = vdd->br_info.common_br.max_bl_level;
+
 	bd = backlight_device_register(dirname, &lcd_device->dev,
-						vdd, NULL, NULL);
+						vdd, NULL, &props);
 	if (IS_ERR(bd)) {
 		rc = PTR_ERR(bd);
 		LCD_INFO(vdd, "backlight : failed to register device\n");
 		return rc;
 	}
+	vdd->bl_dev = bd;
 
 	rc = sysfs_create_group(&bd->dev.kobj, &bl_sysfs_group);
 	if (rc) {

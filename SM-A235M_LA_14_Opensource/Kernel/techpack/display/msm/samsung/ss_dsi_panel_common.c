@@ -5390,6 +5390,10 @@ static void ss_panel_parse_dt(struct samsung_display_driver_data *vdd)
 		panel->bl_config.bl_max_level = panel->bl_config.brightness_max_level = vdd->br_info.common_br.max_bl_level;
 		LCD_INFO(vdd, "set panel bl max level = %d\n",panel->bl_config.bl_max_level);
 	}
+#if IS_ENABLED(CONFIG_BACKLIGHT_CLASS_DEVICE)
+	if (vdd->bl_dev)
+		vdd->bl_dev->props.max_brightness = vdd->br_info.common_br.max_bl_level;
+#endif
 
 	vdd->support_ss_cmd = of_property_read_bool(np, "samsung,support_ss_cmd");
 	vdd->ss_cmd_dsc_long_write = of_property_read_bool(np, "samsung,ss_cmd_dsc_long_write");

@@ -2665,6 +2665,10 @@ struct samsung_display_driver_data {
 
 	/* check if dsi_display is enabled */
 	bool display_enabled;
+
+#if IS_ENABLED(CONFIG_BACKLIGHT_CLASS_DEVICE)
+	struct backlight_device *bl_dev;
+#endif
 };
 
 extern struct list_head vdds_list;
