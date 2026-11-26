@@ -86,9 +86,9 @@ static int (*g_log_buf_print)(int buf_id, int prio, const char *tag, const char 
 
 #define RIL_UNSOL_SIGNAL_STRENGTH 1009
 #define RIL_UNSOL_CELL_INFO_LIST 1036
-/* libsec-ril SecUnsolRespId / UnsolRespId maps AOSP IDs to Samsung IDs for libril_sem.so. */
+/* libsec-ril / libril_sem mapped unsol IDs (RadioImpl_V1_4/V1_5::sendIndication). */
 #define RIL_UNSOL_SIGNAL_STRENGTH_SEC 2401009
-#define RIL_UNSOL_CELL_INFO_LIST_SEC 2601043
+#define RIL_UNSOL_CELL_INFO_LIST_SEC 2401036
 
 #define RIL_CELL_INFO_TYPE_GSM 1
 #define RIL_CELL_INFO_TYPE_CDMA 2
