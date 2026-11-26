@@ -6,7 +6,7 @@ Workarounds and recovery scripts for running **LineageOS 23.2 / Android 16 (PHH-
 
 ## Included Script
 
-- [`patch_rw_system_gsi.sh`](./patch_rw_system_gsi.sh): Idempotent TWRP recovery script that patches `/system/bin/rw-system.sh` and `/system/bin/phh-on-data.sh` in-place (preserving inode, permissions `0755`, and SELinux context, and creating `/sdcard/*.bak` once).
+- [`patch_rw_system_gsi.sh`](./patch_rw_system_gsi.sh): Idempotent TWRP recovery script that patches `/system/bin/rw-system.sh`, `/system/bin/phh-on-data.sh`, and `/system/bin/phh-on-boot.sh` in-place (preserving inode, permissions `0755`, and SELinux context, and creating `/sdcard/*.bak` once).
 
 ### How to Apply in TWRP (e.g., after flashing a new GSI)
 
@@ -21,10 +21,11 @@ Workarounds and recovery scripts for running **LineageOS 23.2 / Android 16 (PHH-
    sh /sdcard/patch_rw_system_gsi.sh
    ```
    Optional flags:
-   - `--all` (default): applies all three fixes
+   - `--all` (default): applies all four fixes
    - `--c2-only`: applies only the Codec2/storage unlock fix
    - `--bright-only`: applies only the brightness HAL fix
    - `--sim-only`: applies only the Samsung RIL SIM UICC auto-recovery fix
+   - `--hotspot-only`: applies only the cellular/Wi-Fi hotspot offload + DNS DNAT fix
 5. Reboot to **System**.
 
 ---
@@ -46,6 +47,14 @@ Workarounds and recovery scripts for running **LineageOS 23.2 / Android 16 (PHH-
 - **Symptom:** Turning off the SIM toggle in Android Settings leaves the SIM stuck disabled (`NOT_READY`), unable to re-enable even across reboots.
 - **Root Cause:** Turning off the toggle sends `ENABLE_UICC_APPLICATIONS false` to Samsung `rild`, which sets persistent property `persist.radio.uicc.enablement0=0`, while `SubscriptionManagerService` marks `simSlotIndex=-1`. Re-enabling sets `areUiccApplicationsEnabled=1`, but `GsmCdmaPhone` skips sending `ENABLE_UICC_APPLICATIONS true` back to `rild` because `simSlotIndex == -1`.
 - **Fix:** Appends an `early-boot` guard to `/system/bin/phh-on-data.sh` (runs after `/data` persistent properties load and before `ril-daemon` starts) that resets `persist.radio.uicc.enablement0` from `0` to `1` on `samsung/a23`. *(Tip: use Airplane Mode instead of disabling the SIM slot toggle.)*
+
+### 4. Mobile Hotspot Connected with No Internet / `!` (`--hotspot-only`)
+- **Symptom:** Clients connect to the Wi-Fi hotspot (`swlan0`) and receive a DHCP lease, yet show `!` / no internet access over cellular data (`rmnet_data0`).
+- **Root Cause (three parts):**
+  1. **Hardware offload (`ipacm`):** Vendor `/vendor/etc/IPACM_cfg.xml` tags `swlan0` as `UNKNOWN`, causing QTI hardware tethering offload to drop forwarded packets.
+  2. **eBPF offload (`BpfCoordinator`):** On kernel `4.19` with Android 16's `offload.o`, `BpfCoordinator` hits `ENOENT` on cellular `rmnet_data0` rules.
+  3. **Missing port-53 DNS proxy:** Android 16's `TetheringNext` (`IpServer.makeServingParams`) assigns the A23's gateway IP as the client's IPv4 DNS server, while `Tethering$TetherMainSM.turnOnMainTetherSettings` passes `usingLegacyDnsProxy=false` to `netd` (`TetherController`), so `dnsmasq` never starts and client DNS queries to port `53` fail with `ICMP Port Unreachable` (`Udp: NoPorts`).
+- **Fix:** Patches `/system/bin/phh-on-boot.sh` on `samsung/a23` to set `tether_offload_disabled=1`, `device_config ... override_tether_enable_bpf_offload=false`, and install idempotent `iptables -t nat` port-53 `DNAT --to-destination 8.8.8.8:53` rules (`udp`/`tcp` via `oem_nat_pre` or `PREROUTING`) for `swlan+`, `rndis+`, `usb+`, `ncm+`, and `bt-pan`.
 
 ---
 

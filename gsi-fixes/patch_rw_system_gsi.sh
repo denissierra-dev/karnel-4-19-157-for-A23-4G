@@ -3,15 +3,17 @@
 # Target device: Samsung Galaxy A23 4G (SM-A235M / a23ub) on stock Android 11 vendor
 #
 # Usage in TWRP (Mount -> System checked, "Mount system partition read-only" unchecked):
-#   sh /sdcard/patch_rw_system_gsi.sh [--all | --c2-only | --bright-only | --sim-only] [--target PATH] [--sim-target PATH]
+#   sh /sdcard/patch_rw_system_gsi.sh [--all | --c2-only | --bright-only | --sim-only | --hotspot-only] [--target PATH] [--sim-target PATH] [--boot-target PATH]
 
 set -eu
 
 DO_C2=1
 DO_BRIGHT=1
 DO_SIM=1
+DO_HOTSPOT=1
 CUSTOM_TARGET=""
 CUSTOM_SIM_TARGET=""
+CUSTOM_BOOT_TARGET=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -19,21 +21,31 @@ while [ "$#" -gt 0 ]; do
             DO_C2=1
             DO_BRIGHT=1
             DO_SIM=1
+            DO_HOTSPOT=1
             ;;
         --c2-only)
             DO_C2=1
             DO_BRIGHT=0
             DO_SIM=0
+            DO_HOTSPOT=0
             ;;
         --bright-only)
             DO_C2=0
             DO_BRIGHT=1
             DO_SIM=0
+            DO_HOTSPOT=0
             ;;
         --sim-only)
             DO_C2=0
             DO_BRIGHT=0
             DO_SIM=1
+            DO_HOTSPOT=0
+            ;;
+        --hotspot-only)
+            DO_C2=0
+            DO_BRIGHT=0
+            DO_SIM=0
+            DO_HOTSPOT=1
             ;;
         --target)
             shift
@@ -44,6 +56,11 @@ while [ "$#" -gt 0 ]; do
             shift
             [ "$#" -gt 0 ] || { echo "ERROR: --sim-target requires a path"; exit 1; }
             CUSTOM_SIM_TARGET="$1"
+            ;;
+        --boot-target)
+            shift
+            [ "$#" -gt 0 ] || { echo "ERROR: --boot-target requires a path"; exit 1; }
+            CUSTOM_BOOT_TARGET="$1"
             ;;
         -h|--help)
             sed -n '2,7p' "$0"
@@ -84,6 +101,7 @@ write_inplace() {
 
 TARGET=""
 SIM_TARGET=""
+BOOT_TARGET=""
 SYS_MOUNT=""
 
 if [ "$DO_C2" -eq 1 ] || [ "$DO_BRIGHT" -eq 1 ]; then
@@ -96,26 +114,33 @@ if [ "$DO_SIM" -eq 1 ]; then
     [ -n "$SIM_TARGET" ] && [ -f "$SIM_TARGET" ] || { echo "ERROR: phh-on-data.sh not found (mount System in TWRP first)"; exit 1; }
 fi
 
-if [ -z "$CUSTOM_TARGET" ] && [ -z "$CUSTOM_SIM_TARGET" ]; then
-    probe="${TARGET:-$SIM_TARGET}"
+if [ "$DO_HOTSPOT" -eq 1 ]; then
+    BOOT_TARGET="$(find_file "$CUSTOM_BOOT_TARGET" "phh-on-boot.sh" || true)"
+    [ -n "$BOOT_TARGET" ] && [ -f "$BOOT_TARGET" ] || { echo "ERROR: phh-on-boot.sh not found (mount System in TWRP first)"; exit 1; }
+fi
+
+if [ -z "$CUSTOM_TARGET" ] && [ -z "$CUSTOM_SIM_TARGET" ] && [ -z "$CUSTOM_BOOT_TARGET" ]; then
+    probe="${TARGET:-${SIM_TARGET:-$BOOT_TARGET}}"
     case "$probe" in
         /system_root/*) SYS_MOUNT="/system_root" ;;
         /system/system/*) SYS_MOUNT="/system" ;;
         *) SYS_MOUNT="/system" ;;
     esac
     mount -o remount,rw "$SYS_MOUNT" 2>/dev/null || true
-    for f in "$TARGET" "$SIM_TARGET"; do
+    for f in "$TARGET" "$SIM_TARGET" "$BOOT_TARGET"; do
         [ -z "$f" ] && continue
         [ -w "$f" ] || { echo "ERROR: $f is read-only; uncheck read-only in TWRP Mount"; exit 1; }
     done
     [ -n "$TARGET" ] && [ ! -f /sdcard/rw-system.sh.bak ] && cp -a "$TARGET" /sdcard/rw-system.sh.bak
     [ -n "$SIM_TARGET" ] && [ ! -f /sdcard/phh-on-data.sh.bak ] && cp -a "$SIM_TARGET" /sdcard/phh-on-data.sh.bak
+    [ -n "$BOOT_TARGET" ] && [ ! -f /sdcard/phh-on-boot.sh.bak ] && cp -a "$BOOT_TARGET" /sdcard/phh-on-boot.sh.bak
 fi
 
 WORK="/tmp/rw-system.gsi.$$.tmp"
 NEXT="/tmp/rw-system.gsi.$$.next"
 SIM_WORK="/tmp/phh-on-data.gsi.$$.tmp"
-trap 'rm -f "$WORK" "$NEXT" "$SIM_WORK"' EXIT
+BOOT_WORK="/tmp/phh-on-boot.gsi.$$.tmp"
+trap 'rm -f "$WORK" "$NEXT" "$SIM_WORK" "$BOOT_WORK"' EXIT
 
 ANY_CHANGED=0
 
@@ -209,6 +234,61 @@ PATCH
         write_inplace "$SIM_WORK" "$SIM_TARGET"
         ANY_CHANGED=1
         echo "SIM_UICC: staged"
+    fi
+fi
+
+if [ -n "$BOOT_TARGET" ] && [ "$DO_HOTSPOT" -eq 1 ]; then
+    if grep -q 'override_tether_enable_bpf_offload' "$BOOT_TARGET" && grep -q -- '--dport 53 -j DNAT' "$BOOT_TARGET"; then
+        echo "HOTSPOT_TETHER: already patched"
+    else
+        cp -a "$BOOT_TARGET" "$BOOT_WORK"
+        awk '
+        function emit_block() {
+            print ""
+            print "# Samsung A23 hotspot/tethering fixes:"
+            print "# 1) QTI ipacm (swlan0=UNKNOWN) and 4.19 offload.o (BpfCoordinator ENOENT) break forwarding."
+            print "# 2) TetheringNext passes usingLegacyDnsProxy=false (no dnsmasq) while IpServer sends"
+            print "#    gateway IP as DHCP DNS; DNAT downstream port 53 to 8.8.8.8."
+            print "if getprop ro.vendor.build.fingerprint | grep -qiE '\''^samsung/a23'\''; then"
+            print "    if [ \"$(settings get global tether_offload_disabled)\" != \"1\" ]; then"
+            print "        settings put global tether_offload_disabled 1"
+            print "    fi"
+            print "    if [ \"$(device_config get connectivity override_tether_enable_bpf_offload)\" != \"false\" ]; then"
+            print "        device_config put connectivity override_tether_enable_bpf_offload false"
+            print "    fi"
+            print "    if [ \"$(device_config get tethering override_tether_enable_bpf_offload)\" != \"false\" ]; then"
+            print "        device_config put tethering override_tether_enable_bpf_offload false"
+            print "    fi"
+            print "    nat_chain=\"PREROUTING\""
+            print "    if /system/bin/iptables -w 5 -t nat -C PREROUTING -j oem_nat_pre >/dev/null 2>&1; then"
+            print "        nat_chain=\"oem_nat_pre\""
+            print "    fi"
+            print "    for iface in swlan+ rndis+ usb+ ncm+ bt-pan; do"
+            print "        for proto in udp tcp; do"
+            print "            if ! /system/bin/iptables -w 5 -t nat -C \"$nat_chain\" -i \"$iface\" -p \"$proto\" --dport 53 -j DNAT --to-destination 8.8.8.8:53 2>/dev/null; then"
+            print "                /system/bin/iptables -w 5 -t nat -A \"$nat_chain\" -i \"$iface\" -p \"$proto\" --dport 53 -j DNAT --to-destination 8.8.8.8:53"
+            print "            fi"
+            print "        done"
+            print "    done"
+            print "    log -t phh-on-boot \"Applied A23 tethering offload and DNS DNAT fixes (chain=$nat_chain)\""
+            print "fi"
+        }
+        {
+            if (!done && index($0, "#Clear looping services") > 0) {
+                emit_block()
+                print ""
+                done = 1
+            }
+            print $0
+        }
+        END {
+            if (!done) emit_block()
+        }
+        ' "$BOOT_WORK" > "$NEXT"
+        mv "$NEXT" "$BOOT_WORK"
+        write_inplace "$BOOT_WORK" "$BOOT_TARGET"
+        ANY_CHANGED=1
+        echo "HOTSPOT_TETHER: staged"
     fi
 fi
 
