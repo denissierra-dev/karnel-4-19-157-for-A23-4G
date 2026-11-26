@@ -15,36 +15,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate or setup Android NDK
-        id: ndk
+      - name: Locate or install Android NDK
         run: |
-          if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -n "${ANDROID_SDK_ROOT:-}" ]; then
-            NDK_FOUND=$(ls -d "${ANDROID_SDK_ROOT}"/ndk/* 2>/dev/null | sort -V | tail -n1 || true)
-            if [ -n "$NDK_FOUND" ]; then
-              echo "ANDROID_NDK_HOME=$NDK_FOUND" >> "$GITHUB_ENV"
-            fi
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          NDK="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            NDK=$(ls -d "$SDK_DIR"/ndk/* /usr/local/lib/android/sdk/ndk-bundle 2>/dev/null | sort -V | tail -n1 || true)
           fi
-
-      - name: Install Android NDK fallback
-        if: env.ANDROID_NDK_HOME == ''
-        uses: android-actions/setup-android@v3
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            yes | "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018" "cmake;3.22.1"
+            NDK="$SDK_DIR/ndk/27.2.12479018"
+          fi
+          echo "Using NDK: $NDK"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
 
       - name: Configure and compile rild (arm64-v8a, API 30)
         run: |
-          NDK="${ANDROID_NDK_HOME:-$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | sort -V | tail -n1)}"
-          echo "Using NDK: $NDK"
           cmake -S gsi-fixes/rild-signal-fix -B build-signal \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-30 \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build build-signal -j
 
-      - name: Verify ELF dependencies and copy to release path
+      - name: Verify ELF dependencies and strip binary
         run: |
-          NDK="${ANDROID_NDK_HOME:-$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | sort -V | tail -n1)}"
-          READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          READELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          STRIP="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           "$STRIP" --strip-unneeded build-signal/rild
           file build-signal/rild
           ls -lh build-signal/rild
