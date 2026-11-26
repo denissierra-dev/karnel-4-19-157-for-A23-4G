@@ -86,6 +86,9 @@ static int (*g_log_buf_print)(int buf_id, int prio, const char *tag, const char 
 
 #define RIL_UNSOL_SIGNAL_STRENGTH 1009
 #define RIL_UNSOL_CELL_INFO_LIST 1036
+/* libsec-ril SecUnsolRespId / UnsolRespId maps AOSP IDs to Samsung IDs for libril_sem.so. */
+#define RIL_UNSOL_SIGNAL_STRENGTH_SEC 2401009
+#define RIL_UNSOL_CELL_INFO_LIST_SEC 2601043
 
 #define RIL_CELL_INFO_TYPE_GSM 1
 #define RIL_CELL_INFO_TYPE_CDMA 2
@@ -465,8 +468,18 @@ static void maybe_inject_signal_from_cell_info(
             LOGI("injecting signal slot=%d src=%s rat=%d lte_ss=%d lte_rsrp=%d wcdma_ss=%d wcdma_rscp=%d gsm_ss=%d",
                  socket_id, source, rat, ss[8], ss[9], ss[16], ss[18], ss[0]);
         }
-        g_real_on_unsol(RIL_UNSOL_SIGNAL_STRENGTH, ss, sizeof(ss), socket_id);
+        g_real_on_unsol(RIL_UNSOL_SIGNAL_STRENGTH_SEC, ss, sizeof(ss), socket_id);
     }
+}
+
+static bool is_unsol_signal_strength(int unsol_response) {
+    return unsol_response == RIL_UNSOL_SIGNAL_STRENGTH_SEC ||
+           unsol_response == RIL_UNSOL_SIGNAL_STRENGTH;
+}
+
+static bool is_unsol_cell_info_list(int unsol_response) {
+    return unsol_response == RIL_UNSOL_CELL_INFO_LIST_SEC ||
+           unsol_response == RIL_UNSOL_CELL_INFO_LIST;
 }
 
 static void wrapped_on_request(int request, void *data, size_t datalen, RIL_Token t, int socket_id) {
@@ -514,17 +527,16 @@ static void wrapped_on_request_complete(RIL_Token t, int e, void *response, size
 }
 
 static void wrapped_on_unsolicited_response(int unsol_response, const void *data, size_t datalen, int socket_id) {
-    if (g_real_on_unsol) {
-        g_real_on_unsol(unsol_response, data, datalen, socket_id);
-    }
-
     if (g_disabled) {
+        if (g_real_on_unsol) {
+            g_real_on_unsol(unsol_response, data, datalen, socket_id);
+        }
         return;
     }
 
-    if (unsol_response == RIL_UNSOL_SIGNAL_STRENGTH) {
+    if (is_unsol_signal_strength(unsol_response)) {
+        int slot = slot_index(socket_id);
         if (has_valid_signal_strength((const int32_t *)data, datalen)) {
-            int slot = slot_index(socket_id);
             pthread_mutex_lock(&g_lock);
             memcpy(g_cached_ss[slot], data, sizeof(RilSignalStrengthV14));
             g_has_cached_ss[slot] = true;
@@ -532,13 +544,38 @@ static void wrapped_on_unsolicited_response(int unsol_response, const void *data
             pthread_mutex_unlock(&g_lock);
             if (!g_logged_native_unsol) {
                 g_logged_native_unsol = true;
-                LOGI("native RIL_UNSOL_SIGNAL_STRENGTH received on slot=%d (len=%zu)", socket_id, datalen);
+                LOGI("native signal unsol=%d received on slot=%d (len=%zu)",
+                     unsol_response, socket_id, datalen);
+            }
+            if (g_real_on_unsol) {
+                g_real_on_unsol(unsol_response, data, datalen, socket_id);
+            }
+            return;
+        }
+
+        RilSignalStrengthV14 cached;
+        bool have_cached = false;
+        pthread_mutex_lock(&g_lock);
+        if (g_has_cached_ss[slot]) {
+            memcpy(cached, g_cached_ss[slot], sizeof(cached));
+            have_cached = true;
+        }
+        pthread_mutex_unlock(&g_lock);
+        if (g_real_on_unsol) {
+            if (have_cached) {
+                g_real_on_unsol(unsol_response, cached, sizeof(cached), socket_id);
+            } else {
+                g_real_on_unsol(unsol_response, data, datalen, socket_id);
             }
         }
         return;
     }
 
-    if (unsol_response == RIL_UNSOL_CELL_INFO_LIST) {
+    if (g_real_on_unsol) {
+        g_real_on_unsol(unsol_response, data, datalen, socket_id);
+    }
+
+    if (is_unsol_cell_info_list(unsol_response)) {
         maybe_inject_signal_from_cell_info(socket_id, data, datalen, "UNSOL_CELL_INFO");
     }
 }
