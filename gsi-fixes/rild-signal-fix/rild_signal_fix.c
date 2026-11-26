@@ -50,10 +50,34 @@ int __android_log_print(int prio, const char *tag, const char *fmt, ...);
 
 #define LOG_TAG_SHIM "SignalShim"
 #define LOG_TAG_RILD "RILD"
+#define LOG_ID_RADIO 1
 
-#define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG_SHIM, fmt, ##__VA_ARGS__)
-#define LOGW(fmt, ...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG_SHIM, fmt, ##__VA_ARGS__)
-#define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG_SHIM, fmt, ##__VA_ARGS__)
+static int (*g_log_buf_print)(int buf_id, int prio, const char *tag, const char *fmt, ...) = NULL;
+
+#define LOGI(fmt, ...)                                                                       \
+    do {                                                                                     \
+        if (g_log_buf_print) {                                                               \
+            g_log_buf_print(LOG_ID_RADIO, ANDROID_LOG_INFO, LOG_TAG_SHIM, fmt, ##__VA_ARGS__); \
+        } else {                                                                             \
+            __android_log_print(ANDROID_LOG_INFO, LOG_TAG_SHIM, fmt, ##__VA_ARGS__);         \
+        }                                                                                    \
+    } while (0)
+#define LOGW(fmt, ...)                                                                       \
+    do {                                                                                     \
+        if (g_log_buf_print) {                                                               \
+            g_log_buf_print(LOG_ID_RADIO, ANDROID_LOG_WARN, LOG_TAG_SHIM, fmt, ##__VA_ARGS__); \
+        } else {                                                                             \
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG_SHIM, fmt, ##__VA_ARGS__);         \
+        }                                                                                    \
+    } while (0)
+#define LOGE(fmt, ...)                                                                        \
+    do {                                                                                      \
+        if (g_log_buf_print) {                                                                \
+            g_log_buf_print(LOG_ID_RADIO, ANDROID_LOG_ERROR, LOG_TAG_SHIM, fmt, ##__VA_ARGS__); \
+        } else {                                                                              \
+            __android_log_print(ANDROID_LOG_ERROR, LOG_TAG_SHIM, fmt, ##__VA_ARGS__);         \
+        }                                                                                     \
+    } while (0)
 
 #define RIL_E_SUCCESS 0
 
@@ -551,6 +575,9 @@ int main(int argc, char **argv) {
 
     umask(0077);
 
+    g_log_buf_print =
+        (int (*)(int, int, const char *, const char *, ...))dlsym(RTLD_DEFAULT, "__android_log_buf_print");
+
     void *lib_cutils = dlopen("libcutils.so", RTLD_NOW);
     if (lib_cutils) {
         g_prop_get = (int (*)(const char *, char *, const char *))dlsym(lib_cutils, "property_get");
@@ -607,8 +634,8 @@ int main(int argc, char **argv) {
         (void (*)(void))must_dlsym(lib_sem, "RIL_startEventLoop", "libril_sem.so");
     void (*rilc_configure_thread_pool)(void) =
         (void (*)(void))must_dlsym(lib_sem, "rilc_configure_thread_pool", "libril_sem.so");
-    void (*ril_register)(const struct RIL_RadioFunctions *) =
-        (void (*)(const struct RIL_RadioFunctions *))must_dlsym(lib_sem, "RIL_register", "libril_sem.so");
+    void (*ril_register)(const struct RIL_RadioFunctions *, int) =
+        (void (*)(const struct RIL_RadioFunctions *, int))must_dlsym(lib_sem, "RIL_register", "libril_sem.so");
     void (*ril_register_socket)(
         const struct RIL_RadioFunctions *(*)(const struct RIL_Env *, int, char **),
         int, int, char **) =
@@ -680,7 +707,7 @@ int main(int argc, char **argv) {
     LOGI("rild signal shim active (disabled=%d sim_slots=%d version=%d)",
          g_disabled ? 1 : 0, sim_slot_count, real_funcs->version);
 
-    ril_register(&wrapped_funcs);
+    ril_register(&wrapped_funcs, sim_slot_count);
 
     if (ril_register_socket && ril_sap_init) {
         ril_register_socket(ril_sap_init, RIL_SAP_SERVICE, ril_argc, ril_argv);
