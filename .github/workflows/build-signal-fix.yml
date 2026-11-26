@@ -1,0 +1,57 @@
+name: Build A23 rild Signal Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'gsi-fixes/rild-signal-fix/**'
+      - '.github/workflows/build-signal-fix.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Locate or setup Android NDK
+        id: ndk
+        run: |
+          if [ -z "${ANDROID_NDK_HOME:-}" ] && [ -n "${ANDROID_SDK_ROOT:-}" ]; then
+            NDK_FOUND=$(ls -d "${ANDROID_SDK_ROOT}"/ndk/* 2>/dev/null | sort -V | tail -n1 || true)
+            if [ -n "$NDK_FOUND" ]; then
+              echo "ANDROID_NDK_HOME=$NDK_FOUND" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - name: Install Android NDK fallback
+        if: env.ANDROID_NDK_HOME == ''
+        uses: android-actions/setup-android@v3
+
+      - name: Configure and compile rild (arm64-v8a, API 30)
+        run: |
+          NDK="${ANDROID_NDK_HOME:-$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | sort -V | tail -n1)}"
+          echo "Using NDK: $NDK"
+          cmake -S gsi-fixes/rild-signal-fix -B build-signal \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-30 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-signal -j
+
+      - name: Verify ELF dependencies and copy to release path
+        run: |
+          NDK="${ANDROID_NDK_HOME:-$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | sort -V | tail -n1)}"
+          READELF="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          "$STRIP" --strip-unneeded build-signal/rild
+          file build-signal/rild
+          ls -lh build-signal/rild
+          "$READELF" -d build-signal/rild
+
+      - name: Upload rild binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a23-rild-signal-fix
+          path: build-signal/rild
