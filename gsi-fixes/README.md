@@ -21,11 +21,14 @@ Workarounds and recovery scripts for running **LineageOS 23.2 / Android 16 (PHH-
    sh /sdcard/patch_rw_system_gsi.sh
    ```
    Optional flags:
-   - `--all` (default): applies all four fixes
+   - `--all` (default): applies all fixes (including `signal` if `--rild-bin` is passed or `rild` sits beside the script)
    - `--c2-only`: applies only the Codec2/storage unlock fix
    - `--bright-only`: applies only the brightness HAL fix
    - `--sim-only`: applies only the Samsung RIL SIM UICC auto-recovery fix
    - `--hotspot-only`: applies only the cellular/Wi-Fi hotspot offload + DNS DNAT fix
+   - `--sms-only`: applies only the outgoing SMS SMSC fix (`persist.sys.phh.patch_smsc=false`)
+   - `--signal-only`: installs the native `rild` signal-bar shim + bind-mount (use `--rild-bin /sdcard/rild`)
+   - `--rild-bin PATH`: custom path to compiled [`rild`](./rild-signal-fix/rild_signal_fix.c) binary (defaults to `./rild` alongside script if present)
 5. Reboot to **System**.
 
 ---
@@ -55,6 +58,16 @@ Workarounds and recovery scripts for running **LineageOS 23.2 / Android 16 (PHH-
   2. **eBPF offload (`BpfCoordinator`):** On kernel `4.19` with Android 16's `offload.o`, `BpfCoordinator` hits `ENOENT` on cellular `rmnet_data0` rules.
   3. **Missing port-53 DNS proxy:** Android 16's `TetheringNext` (`IpServer.makeServingParams`) assigns the A23's gateway IP as the client's IPv4 DNS server, while `Tethering$TetherMainSM.turnOnMainTetherSettings` passes `usingLegacyDnsProxy=false` to `netd` (`TetherController`), so `dnsmasq` never starts and client DNS queries to port `53` fail with `ICMP Port Unreachable` (`Udp: NoPorts`).
 - **Fix:** Patches `/system/bin/phh-on-boot.sh` on `samsung/a23` to set `tether_offload_disabled=1`, `device_config ... override_tether_enable_bpf_offload=false`, and install idempotent `iptables -t nat` port-53 `DNAT --to-destination 8.8.8.8:53` rules (`udp`/`tcp` via `oem_nat_pre` or `PREROUTING`) for `swlan+`, `rndis+`, `usb+`, `ncm+`, and `bt-pan`.
+
+### 5. Outgoing SMS Fails with `SMSC` Error (`--sms-only`)
+- **Symptom:** Incoming SMS works, while outgoing SMS fails on PHH-based GSIs (whereas RCS requires Play Integrity / carrier IMS VoLTE provisioning not available on unlocked GSIs).
+- **Root Cause:** PHH GSI's `persist.sys.phh.patch_smsc` (`true` by default) rewrites/overrides the SMSC on Samsung QMI/SEC RIL (`libsec-ril.so`), causing outbound SMS submission to fail.
+- **Fix:** Sets `persist.sys.phh.patch_smsc false` in `/system/bin/phh-on-boot.sh` on `samsung/a23`.
+
+### 6. Signal Bars Stuck at `0` / `2147483647` (`--signal-only`)
+- **Symptom:** Mobile data, voice calls, and `mCellInfo` measurements work, yet the status bar signal icon stays at 0 bars (`mSignalStrength` fields = `2147483647`, `level = 0`).
+- **Root Cause:** On Samsung's `libsec-ril.so` + `libril_sem.so` (`IRadio@1.5`), `SecRilProxy` dispatches RIL callbacks via the `struct RIL_Env *` table passed into `RIL_Init()` (not PLT `RIL_onUnsolicitedResponse`), translates unsol codes to Samsung IDs (`2401009` for `UNSOL_SIGNAL_STRENGTH`, `2401036` for `cellInfoListInd` in `RadioImpl_V1_4/V1_5::sendIndication`), and often omits or zeroes `UNSOL_SIGNAL_STRENGTH` / `GET_SIGNAL_STRENGTH` while still populating `1128`-byte `RIL_CellInfo_v16` entries (`0x468` stride). Additionally, WCDMA cells zero `rscp`/`ecno`, making `libril_sem.so` `ConvertRscpToAsu(0)` emit bogus `-24 dBm` unless `rscp` is derived from valid ASU (`-113 + 2 * asu`).
+- **Fix:** [`rild-signal-fix/rild_signal_fix.c`](./rild-signal-fix/rild_signal_fix.c) (built cleanly as an NDK C11 arm64 binary by [`.github/workflows/build-signal-fix.yml`](../.github/workflows/build-signal-fix.yml)) runs as `/system/phh/a23-rild-signal-fix` bind-mounted over `/vendor/bin/hw/rild` in `rw-system.sh` (preserving `u:object_r:rild_exec:s0` SELinux entrypoint without modifying `/vendor`). It wraps `RIL_Env` (`OnUnsolicitedResponse` / `OnRequestComplete`) to extract real serving LTE/WCDMA/GSM/NR signal measurements from `RIL_CellInfo_v16`, guard `NR` negative fields from `INT32_MIN` overflow aborts in `convertRilSignalStrengthToHal_1_4`, and inject valid `2401009` (`132`-byte `RIL_SignalStrength`) indications into `libril_sem.so`. Kill-switch: `setprop persist.sys.phh.signal_shim.disable 1`.
 
 ---
 

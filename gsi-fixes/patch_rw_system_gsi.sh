@@ -3,7 +3,7 @@
 # Target device: Samsung Galaxy A23 4G (SM-A235M / a23ub) on stock Android 11 vendor
 #
 # Usage in TWRP (Mount -> System checked, "Mount system partition read-only" unchecked):
-#   sh /sdcard/patch_rw_system_gsi.sh [--all | --c2-only | --bright-only | --sim-only | --hotspot-only] [--target PATH] [--sim-target PATH] [--boot-target PATH]
+#   sh /sdcard/patch_rw_system_gsi.sh [--all | --c2-only | --bright-only | --sim-only | --hotspot-only | --sms-only | --signal-only] [--rild-bin PATH] [--target PATH] [--sim-target PATH] [--boot-target PATH]
 
 set -eu
 
@@ -11,9 +11,26 @@ DO_C2=1
 DO_BRIGHT=1
 DO_SIM=1
 DO_HOTSPOT=1
+DO_SMS=1
+DO_SIGNAL=1
+ONLY_MODE=0
+EXPLICIT_SIGNAL=0
 CUSTOM_TARGET=""
 CUSTOM_SIM_TARGET=""
 CUSTOM_BOOT_TARGET=""
+CUSTOM_RILD_BIN=""
+
+enable_only_mode() {
+    if [ "$ONLY_MODE" -eq 0 ]; then
+        DO_C2=0
+        DO_BRIGHT=0
+        DO_SIM=0
+        DO_HOTSPOT=0
+        DO_SMS=0
+        DO_SIGNAL=0
+        ONLY_MODE=1
+    fi
+}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -22,30 +39,39 @@ while [ "$#" -gt 0 ]; do
             DO_BRIGHT=1
             DO_SIM=1
             DO_HOTSPOT=1
+            DO_SMS=1
+            DO_SIGNAL=1
+            ONLY_MODE=0
             ;;
         --c2-only)
+            enable_only_mode
             DO_C2=1
-            DO_BRIGHT=0
-            DO_SIM=0
-            DO_HOTSPOT=0
             ;;
         --bright-only)
-            DO_C2=0
+            enable_only_mode
             DO_BRIGHT=1
-            DO_SIM=0
-            DO_HOTSPOT=0
             ;;
         --sim-only)
-            DO_C2=0
-            DO_BRIGHT=0
+            enable_only_mode
             DO_SIM=1
-            DO_HOTSPOT=0
             ;;
         --hotspot-only)
-            DO_C2=0
-            DO_BRIGHT=0
-            DO_SIM=0
+            enable_only_mode
             DO_HOTSPOT=1
+            ;;
+        --sms-only)
+            enable_only_mode
+            DO_SMS=1
+            ;;
+        --signal-only)
+            enable_only_mode
+            DO_SIGNAL=1
+            EXPLICIT_SIGNAL=1
+            ;;
+        --rild-bin)
+            shift
+            [ "$#" -gt 0 ] || { echo "ERROR: --rild-bin requires a path"; exit 1; }
+            CUSTOM_RILD_BIN="$1"
             ;;
         --target)
             shift
@@ -103,8 +129,23 @@ TARGET=""
 SIM_TARGET=""
 BOOT_TARGET=""
 SYS_MOUNT=""
+RILD_BIN_SRC=""
 
-if [ "$DO_C2" -eq 1 ] || [ "$DO_BRIGHT" -eq 1 ]; then
+if [ "$DO_SIGNAL" -eq 1 ]; then
+    SCRIPT_DIR="$(dirname "$0")"
+    for p in "$CUSTOM_RILD_BIN" "$SCRIPT_DIR/rild" /sdcard/rild /data/local/tmp/rild_new /tmp/rild; do
+        if [ -n "$p" ] && [ -f "$p" ]; then
+            RILD_BIN_SRC="$p"
+            break
+        fi
+    done
+    if [ -z "$RILD_BIN_SRC" ] && [ "$EXPLICIT_SIGNAL" -eq 1 ]; then
+        echo "ERROR: rild signal-fix binary not found (pass --rild-bin PATH or place at /sdcard/rild)"
+        exit 1
+    fi
+fi
+
+if [ "$DO_C2" -eq 1 ] || [ "$DO_BRIGHT" -eq 1 ] || { [ "$DO_SIGNAL" -eq 1 ] && [ -n "$RILD_BIN_SRC" ]; }; then
     TARGET="$(find_file "$CUSTOM_TARGET" "rw-system.sh" || true)"
     [ -n "$TARGET" ] && [ -f "$TARGET" ] || { echo "ERROR: rw-system.sh not found (mount System in TWRP first)"; exit 1; }
 fi
@@ -114,7 +155,7 @@ if [ "$DO_SIM" -eq 1 ]; then
     [ -n "$SIM_TARGET" ] && [ -f "$SIM_TARGET" ] || { echo "ERROR: phh-on-data.sh not found (mount System in TWRP first)"; exit 1; }
 fi
 
-if [ "$DO_HOTSPOT" -eq 1 ]; then
+if [ "$DO_HOTSPOT" -eq 1 ] || [ "$DO_SMS" -eq 1 ]; then
     BOOT_TARGET="$(find_file "$CUSTOM_BOOT_TARGET" "phh-on-boot.sh" || true)"
     [ -n "$BOOT_TARGET" ] && [ -f "$BOOT_TARGET" ] || { echo "ERROR: phh-on-boot.sh not found (mount System in TWRP first)"; exit 1; }
 fi
@@ -211,6 +252,44 @@ if [ -n "$TARGET" ]; then
         fi
     fi
 
+    if [ "$DO_SIGNAL" -eq 1 ] && [ -n "$RILD_BIN_SRC" ]; then
+        SYS_DIR="${TARGET%/bin/rw-system.sh}"
+        PHH_DIR="$SYS_DIR/phh"
+        RILD_DST="$PHH_DIR/a23-rild-signal-fix"
+        mkdir -p "$PHH_DIR"
+        if [ -f "$RILD_DST" ] && cmp -s "$RILD_BIN_SRC" "$RILD_DST"; then
+            echo "SIGNAL_RILD_BIN: unchanged"
+        else
+            cp -f "$RILD_BIN_SRC" "$RILD_DST"
+            chmod 0755 "$RILD_DST"
+            chcon u:object_r:system_file:s0 "$RILD_DST" 2>/dev/null || true
+            ANY_CHANGED=1
+            echo "SIGNAL_RILD_BIN: installed ($RILD_DST)"
+        fi
+
+        if grep -q 'a23-rild-signal-fix' "$WORK"; then
+            echo "SIGNAL_RILD_MOUNT: already patched"
+        else
+            cat << 'PATCH' >> "$WORK"
+
+# Samsung A23 signal-bar fix: bind-mount RIL_Env signal shim over /vendor/bin/hw/rild
+if getprop ro.vendor.build.fingerprint | grep -qiE '^samsung/a23'; then
+    if [ -f /system/phh/a23-rild-signal-fix ] && [ -f /vendor/bin/hw/rild ]; then
+        ctxt="$(ls -lZ /vendor/bin/hw/rild | grep -oE 'u:object_r:[^:]*:s0')"
+        cp -a /system/phh/a23-rild-signal-fix /mnt/phh/vendor_bin_hw_rild
+        chmod 0755 /mnt/phh/vendor_bin_hw_rild
+        [ -n "$ctxt" ] && chcon "$ctxt" /mnt/phh/vendor_bin_hw_rild
+        mount -o bind /mnt/phh/vendor_bin_hw_rild /vendor/bin/hw/rild
+    fi
+fi
+PATCH
+            RW_CHANGED=1
+            echo "SIGNAL_RILD_MOUNT: staged"
+        fi
+    elif [ "$DO_SIGNAL" -eq 1 ]; then
+        echo "SIGNAL_RILD: skipped (rild binary not present; pass --rild-bin PATH)"
+    fi
+
     if [ "$RW_CHANGED" -eq 1 ]; then
         write_inplace "$WORK" "$TARGET"
         ANY_CHANGED=1
@@ -234,6 +313,40 @@ PATCH
         write_inplace "$SIM_WORK" "$SIM_TARGET"
         ANY_CHANGED=1
         echo "SIM_UICC: staged"
+    fi
+fi
+
+if [ -n "$BOOT_TARGET" ] && [ "$DO_SMS" -eq 1 ]; then
+    if grep -q 'persist\.sys\.phh\.patch_smsc' "$BOOT_TARGET"; then
+        echo "SMS_PATCH_SMSC: already patched"
+    else
+        cp -a "$BOOT_TARGET" "$BOOT_WORK"
+        awk '
+        function emit_sms() {
+            print ""
+            print "# Samsung A23 SMS sending fix: disable PHH SMSC rewriting (causes SEND_SMS error 39)"
+            print "if getprop ro.vendor.build.fingerprint | grep -qiE '\''^samsung/a23'\''; then"
+            print "    if [ \"$(getprop persist.sys.phh.patch_smsc)\" != \"false\" ]; then"
+            print "        setprop persist.sys.phh.patch_smsc false"
+            print "    fi"
+            print "fi"
+        }
+        {
+            if (!done && index($0, "#Clear looping services") > 0) {
+                emit_sms()
+                print ""
+                done = 1
+            }
+            print $0
+        }
+        END {
+            if (!done) emit_sms()
+        }
+        ' "$BOOT_WORK" > "$NEXT"
+        mv "$NEXT" "$BOOT_WORK"
+        write_inplace "$BOOT_WORK" "$BOOT_TARGET"
+        ANY_CHANGED=1
+        echo "SMS_PATCH_SMSC: staged"
     fi
 fi
 
